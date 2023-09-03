@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en-US">
+  <head>
+    <meta charset="utf-8" />
+    <title>Gamedev Canvas Workshop</title>
+    <style>
+      * {
+        padding: 0;
+        margin: 0;
+      }
+      canvas {
+        background: rgb(0, 0, 0);
+        display: block;
+        margin: 0 auto;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="myCanvas" width="1000" height="700"></canvas>
+
+    <script>
+      //--------------------------------------------------------------------------------------\\
+      //                                       Settings                                       \\
+      //--------------------------------------------------------------------------------------\\
+      
+      // Trace centres. If true, don't draw the planets - just trace the centres of the planets
+      const traceCentres = false;
+
+      // Gravitational constant. Higher values mean a stronger gravitational force.
+      // Try negative values for gravity that repels planets away from each other.
+      const G = 2000;
+
+      // Time interval length. Making this large makes the animation faster but less stable
+      const dt = 0.02;
+
+      // Whether planets coalesce into a single planet if they get too close. 
+      // If set to false then a speed limit is recommended for stability
+      const doPlanetsCoalesce = true;
+
+      // Drag coefficient. 0 is no drag, 1 is max drag (no movement)
+      const dragCoeff = 0; 
+
+      // Speed limit. 0 means no limit. If greater than 0, the speeds of planets are clamped to be no greater than this.
+      const speedLimit = 200;
+
+      // Whether to bounce off walls. Turn off periodicWalls if true.
+      const bounceOffWalls = false;
+      
+      // If bouncing off walls, how much of the velocity should be preserved. 0 for no bounce back, 1 for total bounce back
+      const bounceAbsorption = 1;
+
+      // Whether to loop round to the other side when passing through a wall. Turn off bounceOffWalls if true.
+      const periodicWalls = true;
+
+      // Initial number of planets
+      const initialPlanetCount = 300;
+
+      // Minimum and maximum radius used for generating random planets
+      const minRadius = 0.5;
+      const maxRadius = 2;
+
+      // Maximum initial speed for planets. Direction of initial velocity is random and isotropic
+      const maxInitSpeed = 100;
+
+      //--------------------------------------------------------------------------------------\\
+      
+      const canvas = document.getElementById("myCanvas");
+      const ctx = canvas.getContext("2d");
+      const worldWidth = canvas.width;
+      const worldHeight = canvas.height;
+
+      // Functions to make (0, 0) in the middle of the screen and upwards correspond to positive y
+      // (screen coords have down as positive y)
+
+      function worldXToScreenX(x)
+      {
+        return canvas.width / 2 + x;
+      }
+
+      function worldYToScreenY(y)
+      {
+        return canvas.height / 2 - y;
+      }
+
+      // Planet class
+      class Planet
+      {
+        radius;
+        x;
+        y;
+        vx;
+        vy;
+        destroyed = false;
+
+        constructor(radius, x , y, vx, vy)
+        {
+          this.radius = radius;
+          this.x = x;
+          this.y = y;
+          this.vx = vx;
+          this.vy = vy;
+        }
+
+        draw()
+        {
+          ctx.beginPath();
+          if (traceCentres)
+          {
+            // Draw a single small circle
+            ctx.arc(worldXToScreenX(this.x), worldYToScreenY(this.y), 0.1, 0, Math.PI * 2);
+          }
+          else
+          {
+            // Draw a circle with the radius of the planet
+            ctx.arc(worldXToScreenX(this.x), worldYToScreenY(this.y), this.radius, 0, Math.PI * 2);
+
+            // Draw an extra circle on the other side if it's about to loop through the periodic walls
+            if (periodicWalls)
+            {
+              let additionalCircleX = this.x;
+              let additionalCircleY = this.y;
+              if (this.x - this.radius < -worldWidth / 2)
+              {
+                additionalCircleX = this.x + worldWidth;
+              }
+              else if (this.x + this.radius > worldWidth / 2)
+              {
+                additionalCircleX = this.x - worldWidth;
+              }
+              if (this.y - this.radius < -worldHeight / 2)
+              {
+                additionalCircleY = this.y + worldHeight;
+              }
+              else if (this.y + this.radius > worldHeight / 2)
+              {
+                additionalCircleY = this.y - worldHeight;
+              }
+              if (additionalCircleX != this.x || additionalCircleY != this.y)
+              {
+                ctx.arc(worldXToScreenX(additionalCircleX), worldYToScreenY(additionalCircleY), this.radius, 0, Math.PI * 2);
+              }
+            }
+          }
+          ctx.fillStyle = "lightblue";
+          ctx.fill();
+          ctx.closePath();
+        }
+      };
+
+      function ForceX(p1, p2)
+      {
+        let xDiff = p1.x - p2.x;
+        let yDiff = p1.y - p2.y;
+        if (periodicWalls)
+        {
+          // Gravitation force should respect periodic walls. So pick the closer of the two distances in each component
+          xDiff = Math.min(xDiff, worldWidth - p1.x + p2.x);
+          yDiff = Math.min(yDiff, worldHeight - p1.y + p2.y);
+        }
+        const distanceSq = xDiff**2 + yDiff**2;
+        return -G * p1.radius**2 * p2.radius**2 * xDiff / distanceSq**1.5;
+      }
+      
+      function ForceY(p1, p2)
+      {
+        let xDiff = p1.x - p2.x;
+        let yDiff = p1.y - p2.y;
+        if (periodicWalls)
+        {
+          // Gravitation force should respect periodic walls. So pick the closer of the two distances in each component
+          xDiff = Math.min(xDiff, worldWidth - p1.x + p2.x);
+          yDiff = Math.min(yDiff, worldHeight - p1.y + p2.y);
+        }
+        const distanceSq = xDiff**2 + yDiff**2;
+        return -G * p1.radius**2 * p2.radius**2 * yDiff / distanceSq**1.5;
+      }
+
+      function applyForces(p1, p2)
+      {
+        // Alter the velocities of p1 and p2 according to the gravitational force between them
+        if (p1.destroyed || p2.destroyed)
+        {
+          return;
+        }
+        if (p1.radius**2 > 0)
+        {
+          p1.vx += dt * ForceX(p1, p2) / p1.radius**2;
+          p1.vy += dt * ForceY(p1, p2) / p1.radius**2;
+        }
+
+        if (p2.radius**2 > 0)
+        {
+          p2.vx += dt * ForceX(p2, p1) / p2.radius**2;
+          p2.vy += dt * ForceY(p2, p1) / p2.radius**2;
+        }
+      }
+
+      function applyExternals(p)
+      {
+        // Alter the velocity of p according to drag, bouncing, or speed limit
+        if (p.destroyed)
+        {
+          return;
+        }
+        if (bounceOffWalls)
+        {
+          if (p.x + dt * p.vx - p.radius < -worldWidth / 2 || p.x + dt * p.vx + p.radius > worldWidth / 2)
+          {
+            p.vx *= -bounceAbsorption;
+          }
+          if (p.y + dt * p.vy - p.radius < -worldHeight / 2 || p.y + dt * p.vy + p.radius > worldHeight / 2)
+          {
+            p.vy *= -bounceAbsorption;
+          }
+        }
+
+        p.vx *= 1 - dragCoeff;
+        p.vy *= 1 - dragCoeff;
+
+        const speed = Math.sqrt(p.vx ** 2 + p.vy ** 2);
+        if (speedLimit > 0 && speed > speedLimit)
+        {
+          p.vx *= speedLimit / speed;
+          p.vy *= speedLimit / speed;
+        }
+      }
+
+      function coalescePlanets()
+      {
+        // Destroy planets that get too close to each other and create a new planet with the same mass
+
+        // Temporary container for new planets in this time step
+        newPlanets = [];
+        for (p1 of allPlanets)
+        {
+          if (p1.destroyed)
+          {
+            continue;
+          }
+          for (p2 of allPlanets)
+          {
+            if (p2.destroyed || Object.is(p1, p2))
+            {
+              continue;
+            }
+
+            const distanceBetweenCentresSq = (p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2;
+            if (distanceBetweenCentresSq < (p1.radius**2 + p2.radius**2) / 4) // wait for the planets to overlap a bit
+            {
+              // New radius based on conservation of mass
+              const newRadius = Math.sqrt(p1.radius**2 + p2.radius**2);
+
+              // The new position will be the average position weighted by mass
+              const newX = (p1.x * p1.radius**2 + p2.x * p2.radius**2) / (newRadius**2);
+              const newY = (p1.y * p1.radius**2 + p2.y * p2.radius**2) / (newRadius**2);
+
+              // The new velocity is determined by conservation of linear momentum
+              const newVx = (p1.vx * p1.radius**2 + p2.vx * p2.radius**2) / newRadius**2;
+              const newVy = (p1.vy * p1.radius**2 + p2.vy * p2.radius**2) / newRadius**2;
+
+              newPlanet = new Planet(newRadius, newX, newY, newVx, newVy);
+              newPlanets.push(newPlanet);
+
+              // Flag the old planets as destroyed
+              p1.destroyed = true;
+              p2.destroyed = true;
+            }
+          }
+        }
+
+        // Add the new planets
+        for (p of newPlanets)
+        {
+          allPlanets.push(p);
+        }
+      }
+
+      function updatePosition(p)
+      {
+        // Update the position of p based on its velocity
+        if (p.destroyed)
+        {
+          return;
+        }
+        p.x += dt * p.vx;
+        p.y += dt * p.vy;
+
+        if (periodicWalls)
+        {
+          // Loop around
+          if (Math.abs(p.x) > worldWidth / 2)
+          {
+            p.x = -p.x;
+          }
+          if (Math.abs(p.y) > worldHeight / 2)
+          {
+            p.y = -p.y;
+          }
+        }
+      }
+
+      // Initialize array of random planets
+      allPlanets = [];
+      for (i = 0; i < initialPlanetCount; ++i)
+      {
+        let radius = minRadius + Math.random() * (maxRadius - minRadius);
+        let x = Math.random() * (worldWidth - radius) - (worldWidth - radius) / 2;
+        let y = Math.random() * (worldHeight - radius) - (worldHeight - radius) / 2;
+        let theta = Math.random() * Math.PI * 2;
+        let vx = maxInitSpeed * Math.cos(theta);
+        let vy = maxInitSpeed * Math.sin(theta);
+        allPlanets.push(new Planet(radius, x, y, vx, vy));
+      }
+
+      function updateAll()
+      {
+        // Function to update all velocities and then positions
+        for (p1 of allPlanets)
+        {
+          for (p2 of allPlanets)
+          {
+            if (!Object.is(p1, p2))
+            {
+              applyForces(p1, p2);
+            }
+          }
+        }
+
+        for (p of allPlanets)
+        {
+          applyExternals(p);
+          updatePosition(p);
+        }
+
+        if (doPlanetsCoalesce)
+        {
+          coalescePlanets();
+        }
+      }
+
+      function draw() 
+      {
+        // Clear the canvas each frame if not tracing the centres
+        if (!traceCentres)
+        {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Draw each planet
+        for (p of allPlanets)
+        {
+          if (!p.destroyed)
+          {
+            p.draw();
+          }
+        }
+      }
+
+      function onFrame()
+      {
+        // Used as a callback below to run on each frame
+        updateAll();
+        draw();
+      }
+
+      setInterval(onFrame, 10);
+
+    </script>
+  </body>
+</html>
